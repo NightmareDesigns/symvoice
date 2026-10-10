@@ -1,0 +1,276 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define TARGET_SAMPLE_RATE 16000U
+
+typedef struct {
+    uint16_t channels;
+    uint32_t sample_rate;
+    uint16_t block_align;
+    uint32_t data_size;
+    long data_offset;
+} wav_info;
+
+static uint16_t read_u16(const unsigned char *bytes)
+{
+    return (uint16_t)((uint16_t)bytes[0] | ((uint16_t)bytes[1] << 8));
+}
+
+static uint32_t read_u32(const unsigned char *bytes)
+{
+    return (uint32_t)bytes[0]
+        | ((uint32_t)bytes[1] << 8)
+        | ((uint32_t)bytes[2] << 16)
+        | ((uint32_t)bytes[3] << 24);
+}
+
+static int read_exact(FILE *file, void *buffer, size_t size)
+{
+    return fread(buffer, 1, size, file) == size;
+}
+
+static int seek_to(FILE *file, long offset)
+{
+    return offset >= 0 && fseek(file, offset, SEEK_SET) == 0;
+}
+
+static int parse_wav(FILE *file, wav_info *info)
+{
+    unsigned char header[12];
+    unsigned char chunk_header[8];
+    unsigned char format[16];
+    long file_size;
+    uint32_t riff_size;
+    uint32_t format_size = 0;
+    long format_offset = 0;
+    int found_format = 0;
+    int found_data = 0;
+
+    if (fseek(file, 0, SEEK_END) != 0 || (file_size = ftell(file)) < 12
+        || !seek_to(file, 0) || !read_exact(file, header, sizeof(header))) {
+        return 0;
+    }
+    if (memcmp(header, "RIFF", 4) != 0 || memcmp(header + 8, "WAVE", 4) != 0) {
+        return 0;
+    }
+
+    riff_size = read_u32(header + 4);
+    if (riff_size < 4 || (uint64_t)riff_size + 8U > (uint64_t)file_size) {
+        return 0;
+    }
+
+    while (ftell(file) >= 0 && (uint64_t)ftell(file) + sizeof(chunk_header) <= (uint64_t)riff_size + 8U) {
+        uint32_t chunk_size;
+        long chunk_offset;
+        long next_offset;
+
+        if (!read_exact(file, chunk_header, sizeof(chunk_header))) {
+            return 0;
+        }
+        chunk_size = read_u32(chunk_header + 4);
+        chunk_offset = ftell(file);
+        if (chunk_offset < 0 || (uint64_t)chunk_offset + chunk_size > (uint64_t)riff_size + 8U) {
+            return 0;
+        }
+        next_offset = chunk_offset + (long)chunk_size + (long)(chunk_size & 1U);
+        if ((uint64_t)next_offset > (uint64_t)riff_size + 8U) {
+            return 0;
+        }
+
+        if (memcmp(chunk_header, "fmt ", 4) == 0 && !found_format) {
+            if (chunk_size < sizeof(format)) {
+                return 0;
+            }
+            format_offset = chunk_offset;
+            format_size = chunk_size;
+            found_format = 1;
+        } else if (memcmp(chunk_header, "data", 4) == 0 && !found_data) {
+            info->data_offset = chunk_offset;
+            info->data_size = chunk_size;
+            found_data = 1;
+        }
+
+        if (!seek_to(file, next_offset)) {
+            return 0;
+        }
+    }
+
+    if (!found_format || !found_data || !seek_to(file, format_offset)
+        || !read_exact(file, format, sizeof(format))) {
+        return 0;
+    }
+
+    info->channels = read_u16(format + 2);
+    info->sample_rate = read_u32(format + 4);
+    info->block_align = read_u16(format + 12);
+
+    return read_u16(format) == 1
+        && (info->channels == 1 || info->channels == 2)
+        && read_u16(format + 14) == 16
+        && info->sample_rate > 0
+        && info->block_align == info->channels * 2U
+        && read_u32(format + 8) == info->sample_rate * info->block_align
+        && info->data_size > 0
+        && info->data_size % info->block_align == 0;
+}
+
+static int32_t decode_sample(const unsigned char *bytes)
+{
+    uint16_t sample = read_u16(bytes);
+    return sample < 32768U ? sample : (int32_t)sample - 65536;
+}
+
+static int write_u16(FILE *file, uint16_t value)
+{
+    unsigned char bytes[2] = {(unsigned char)value, (unsigned char)(value >> 8)};
+    return fwrite(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
+}
+
+static int write_u32(FILE *file, uint32_t value)
+{
+    unsigned char bytes[4] = {
+        (unsigned char)value,
+        (unsigned char)(value >> 8),
+        (unsigned char)(value >> 16),
+        (unsigned char)(value >> 24)
+    };
+    return fwrite(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
+}
+
+static int write_wav_header(FILE *file, uint32_t sample_count)
+{
+    uint32_t data_size = sample_count * 2U;
+
+    return fwrite("RIFF", 1, 4, file) == 4
+        && write_u32(file, data_size + 36U)
+        && fwrite("WAVEfmt ", 1, 8, file) == 8
+        && write_u32(file, 16)
+        && write_u16(file, 1)
+        && write_u16(file, 1)
+        && write_u32(file, TARGET_SAMPLE_RATE)
+        && write_u32(file, TARGET_SAMPLE_RATE * 2U)
+        && write_u16(file, 2)
+        && write_u16(file, 16)
+        && fwrite("data", 1, 4, file) == 4
+        && write_u32(file, data_size);
+}
+
+static int prepare_audio(const char *input_path, const char *output_path)
+{
+    FILE *input = NULL;
+    FILE *output = NULL;
+    unsigned char *source_bytes = NULL;
+    int32_t *mono_samples = NULL;
+    wav_info info;
+    uint64_t frame_count;
+    uint64_t output_count;
+    uint64_t output_index;
+    uint64_t output_bytes;
+    int success = 0;
+
+    input = fopen(input_path, "rb");
+    if (input == NULL) {
+        fprintf(stderr, "Could not open input WAV file.\n");
+        goto cleanup;
+    }
+    if (!parse_wav(input, &info)) {
+        fprintf(stderr, "Input must be a valid 16-bit PCM WAV with one or two channels.\n");
+        goto cleanup;
+    }
+
+    frame_count = info.data_size / info.block_align;
+    output_count = (frame_count * TARGET_SAMPLE_RATE + info.sample_rate / 2U) / info.sample_rate;
+    if (output_count == 0) {
+        output_count = 1;
+    }
+    output_bytes = output_count * 2U;
+    if (output_bytes > UINT32_MAX - 36U || output_count > SIZE_MAX / sizeof(*mono_samples)) {
+        fprintf(stderr, "Audio is too long for a standard WAV file.\n");
+        goto cleanup;
+    }
+
+    source_bytes = (unsigned char *)malloc(info.data_size);
+    mono_samples = (int32_t *)malloc((size_t)frame_count * sizeof(*mono_samples));
+    if (source_bytes == NULL || mono_samples == NULL) {
+        fprintf(stderr, "Not enough memory to prepare this audio file.\n");
+        goto cleanup;
+    }
+    if (!seek_to(input, info.data_offset) || !read_exact(input, source_bytes, info.data_size)) {
+        fprintf(stderr, "Could not read audio samples.\n");
+        goto cleanup;
+    }
+
+    for (uint64_t frame = 0; frame < frame_count; ++frame) {
+        const unsigned char *sample = source_bytes + frame * info.block_align;
+        int32_t left = decode_sample(sample);
+        mono_samples[frame] = info.channels == 1
+            ? left
+            : (left + decode_sample(sample + 2)) / 2;
+    }
+
+    output = fopen(output_path, "wb");
+    if (output == NULL) {
+        fprintf(stderr, "Could not open output WAV file.\n");
+        goto cleanup;
+    }
+    if (!write_wav_header(output, (uint32_t)output_count)) {
+        fprintf(stderr, "Could not write output WAV header.\n");
+        goto cleanup;
+    }
+
+    for (output_index = 0; output_index < output_count; ++output_index) {
+        uint64_t source_position = output_index * info.sample_rate;
+        uint64_t source_index = source_position / TARGET_SAMPLE_RATE;
+        uint64_t remainder = source_position % TARGET_SAMPLE_RATE;
+        int32_t first;
+        int32_t second;
+        int64_t numerator;
+        int32_t converted;
+
+        if (source_index >= frame_count) {
+            source_index = frame_count - 1;
+        }
+        first = mono_samples[source_index];
+        second = source_index + 1 < frame_count ? mono_samples[source_index + 1] : first;
+        numerator = (int64_t)first * (TARGET_SAMPLE_RATE - remainder)
+            + (int64_t)second * remainder;
+        converted = numerator >= 0
+            ? (int32_t)((numerator + TARGET_SAMPLE_RATE / 2U) / TARGET_SAMPLE_RATE)
+            : (int32_t)((numerator - TARGET_SAMPLE_RATE / 2U) / TARGET_SAMPLE_RATE);
+        if (!write_u16(output, (uint16_t)(int16_t)converted)) {
+            fprintf(stderr, "Could not write output audio samples.\n");
+            goto cleanup;
+        }
+    }
+
+    if (fflush(output) != 0) {
+        fprintf(stderr, "Could not finish writing output WAV file.\n");
+        goto cleanup;
+    }
+    success = 1;
+
+cleanup:
+    if (output != NULL && fclose(output) != 0) {
+        success = 0;
+    }
+    if (input != NULL) {
+        fclose(input);
+    }
+    free(mono_samples);
+    free(source_bytes);
+    if (!success) {
+        remove(output_path);
+    }
+    return success;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc != 3) {
+        fprintf(stderr, "Usage: symvoice-audio <input.wav> <output.wav>\n");
+        return 2;
+    }
+    return prepare_audio(argv[1], argv[2]) ? 0 : 1;
+}
