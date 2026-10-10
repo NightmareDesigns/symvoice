@@ -51,5 +51,23 @@ python python/symvoice.py play voice.wav
 Playback uses the Windows default audio device and accepts valid 16-bit PCM WAV
 files with one or two channels. Playback is not available on other platforms.
 
+### Collect labeled voice recordings
+
+Create a local corpus, then record phrases or import your own WAV recordings.
+Keep each clip focused on the words in its transcript:
+
+```powershell
+python python/symvoice.py dataset init my-voice
+python python/symvoice.py dataset record my-voice --text "Hello, this is my voice." --seconds 5
+python python/symvoice.py dataset add my-voice existing.wav --text "The exact words spoken."
+python python/symvoice.py dataset validate my-voice
+python python/symvoice.py dataset list my-voice
+```
+
+Each sample is normalized to mono 16 kHz PCM and stored under `audio/`; the
+transcripts and relative audio paths are kept in `manifest.json`. Record only
+your own voice or audio you have permission to use. This creates a labeled
+recording corpus; **it does not train a voice model or generate speech yet**.
+
 The Python command locates the native executable in `build`. To use a different
 build location, pass `--engine path\to\symvoice-audio.exe`.

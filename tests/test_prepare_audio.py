@@ -1,3 +1,4 @@
+import json
 import struct
 import subprocess
 import sys
@@ -8,6 +9,7 @@ from pathlib import Path
 
 
 ENGINE = Path(sys.argv.pop(1)).resolve()
+CLI = Path(__file__).resolve().parents[1] / "python" / "symvoice.py"
 
 
 def write_wav(path, channels, sample_rate, samples, sample_width=2):
@@ -101,6 +103,88 @@ class PrepareAudioTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"only on Windows", result.stderr)
+
+
+class VoiceDatasetTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp_dir.name)
+        self.dataset = self.directory / "voice"
+        self.input_path = self.directory / "input.wav"
+        subprocess.run([sys.executable, CLI, "dataset", "init", self.dataset], check=True)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def run_cli(self, *arguments, check=False):
+        return subprocess.run(
+            [sys.executable, CLI, *map(str, arguments)], capture_output=True, check=check)
+
+    def add_sample(self, text="A short voice sample."):
+        write_wav(self.input_path, 2, 8000, [0, 0, 1000, 1000, 2000, 2000])
+        return self.run_cli(
+            "dataset", "add", self.dataset, self.input_path, "--text", text,
+            "--engine", ENGINE)
+
+    def test_add_normalizes_labels_and_validates_sample(self):
+        result = self.add_sample("  Hello Symvoice.  ")
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        manifest = json.loads((self.dataset / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(manifest["samples"]), 1)
+        entry = manifest["samples"][0]
+        self.assertEqual(entry["text"], "Hello Symvoice.")
+        self.assertEqual(entry["duration_seconds"], 0.000375)
+        with wave.open(str(self.dataset / entry["audio"]), "rb") as audio:
+            self.assertEqual(
+                (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()),
+                (1, 2, 16000),
+            )
+
+        validated = self.run_cli("dataset", "validate", self.dataset)
+        self.assertEqual(validated.returncode, 0, validated.stderr.decode())
+        self.assertIn(b"1 sample(s)", validated.stdout)
+
+    def test_add_rejects_empty_transcript_without_adding_sample(self):
+        result = self.add_sample("   ")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(list((self.dataset / "audio").glob("*.wav")))
+        manifest = json.loads((self.dataset / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["samples"], [])
+
+    def test_add_rejects_invalid_input_without_changing_corpus(self):
+        self.input_path.write_bytes(b"not audio")
+        result = self.run_cli(
+            "dataset", "add", self.dataset, self.input_path, "--text", "words",
+            "--engine", ENGINE)
+
+        self.assertNotEqual(result.returncode, 0)
+        manifest = json.loads((self.dataset / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["samples"], [])
+
+    def test_validate_rejects_unsafe_manifest_audio_path(self):
+        manifest_path = self.dataset / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["samples"].append({
+            "id": "unsafe",
+            "audio": "../outside.wav",
+            "text": "hello",
+            "duration_seconds": 1,
+        })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        result = self.run_cli("dataset", "validate", self.dataset)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"unsafe audio path", result.stderr)
+
+    def test_record_rejects_out_of_range_duration(self):
+        result = self.run_cli(
+            "dataset", "record", self.dataset, "--text", "Hello.", "--seconds", "0",
+            "--engine", ENGINE)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"between 1 and 3600", result.stderr)
 
 
 if __name__ == "__main__":
