@@ -364,6 +364,7 @@ def main():
             if len(text_words(args.text)) != 1:
                 raise ValueError("a word recording must contain exactly one word")
             record_sample(args.directory, args.seconds, args.text, engine, kind="word")
+            return 0
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as error:
         return error.returncode

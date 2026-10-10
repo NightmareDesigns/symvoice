@@ -213,6 +213,14 @@ class VoiceDatasetTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"between 1 and 3600", result.stderr)
 
+    def test_word_record_rejects_more_than_one_word(self):
+        result = self.run_cli(
+            "dataset", "word-record", self.dataset, "--text", "two words",
+            "--engine", ENGINE)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"exactly one word", result.stderr)
+
     def add_word(self, text, samples):
         write_wav(self.input_path, 1, 16000, samples)
         return self.run_cli(
