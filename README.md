@@ -77,6 +77,13 @@ python python/symvoice.py dataset word-add my-voice another-word.wav --text "wor
 python python/symvoice.py dataset speak my-voice response.wav --text "Hello, world!"
 ```
 
+An AI response can be passed over stdin to avoid quoting arbitrary generated
+text in a shell command:
+
+```powershell
+Get-Content .\response.txt -Raw | python python/symvoice.py dataset speak my-voice response.wav --text -
+```
+
 This first speech output uses the longest matching recorded utterances, then
 falls back to individual word clips joined with short silences. It supports up
 to 64 words per output and requires recordings that cover all requested words

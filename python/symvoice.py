@@ -13,6 +13,7 @@ from pathlib import Path
 SAMPLE_RATE = 16000
 MANIFEST_NAME = "manifest.json"
 WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
+MAX_TEXT_LENGTH = 65536
 
 
 def find_engine():
@@ -66,6 +67,15 @@ def checked_sample_path(dataset, entry):
 
 def text_words(text):
     return WORD_PATTERN.findall(text.casefold())
+
+
+def read_synthesis_text(value):
+    if value != "-":
+        return value
+    text = sys.stdin.read(MAX_TEXT_LENGTH + 1)
+    if len(text) > MAX_TEXT_LENGTH:
+        raise ValueError(f"piped speech text must not exceed {MAX_TEXT_LENGTH} characters")
+    return text
 
 
 def write_manifest(dataset, manifest):
@@ -336,7 +346,7 @@ def main():
             engine = args.engine or find_engine()
             if engine is None or not engine.is_file():
                 parser.error("native engine not found; build it with CMake or pass --engine")
-            synthesize_text(args.directory, args.output, args.text, engine)
+            synthesize_text(args.directory, args.output, read_synthesis_text(args.text), engine)
             return 0
 
         engine = args.engine or find_engine()

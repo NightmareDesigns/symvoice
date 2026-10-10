@@ -248,6 +248,29 @@ class VoiceDatasetTests(unittest.TestCase):
         self.assertEqual(samples[2:322], (0,) * 320)
         self.assertEqual(samples[322:], (-1000, -2000))
 
+    def test_synthesis_accepts_piped_ai_text(self):
+        self.assertEqual(self.add_word("Hello", [1000, 2000]).returncode, 0)
+        output_path = self.directory / "spoken.wav"
+        result = subprocess.run(
+            [sys.executable, CLI, "dataset", "speak", self.dataset, output_path,
+             "--text", "-", "--engine", str(ENGINE)],
+            input="Hello!\n", text=True, capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output_path.is_file())
+        self.assertIn("Created speech WAV", result.stdout)
+
+    def test_piped_synthesis_text_has_a_size_limit(self):
+        result = subprocess.run(
+            [sys.executable, CLI, "dataset", "speak", self.dataset,
+             self.directory / "spoken.wav", "--text", "-", "--engine", str(ENGINE)],
+            input="x" * 65537, text=True, capture_output=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must not exceed 65536 characters", result.stderr)
+
     def test_synthesis_reports_missing_words_without_creating_output(self):
         output_path = self.directory / "spoken.wav"
 
