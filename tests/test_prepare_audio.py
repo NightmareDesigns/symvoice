@@ -76,6 +76,15 @@ class PrepareAudioTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertFalse(self.output_path.exists())
 
+    @unittest.skipIf(sys.platform == "win32", "Windows microphone input is hardware-dependent")
+    def test_recording_is_reported_as_unsupported_off_windows(self):
+        result = subprocess.run(
+            [ENGINE, "record", "1", self.output_path], capture_output=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"only on Windows", result.stderr)
+        self.assertFalse(self.output_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
