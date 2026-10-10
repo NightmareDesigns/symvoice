@@ -29,6 +29,9 @@ def main():
     record.add_argument("seconds", type=int)
     record.add_argument("output", type=Path)
     record.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
+    play = commands.add_parser("play", help="play a WAV recording through the Windows default audio device")
+    play.add_argument("input", type=Path)
+    play.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
     args = parser.parse_args()
 
     engine = args.engine or find_engine()
@@ -37,8 +40,10 @@ def main():
     try:
         if args.command == "prepare":
             command = [str(engine), "prepare", str(args.input), str(args.output)]
-        else:
+        elif args.command == "record":
             command = [str(engine), "record", str(args.seconds), str(args.output)]
+        else:
+            command = [str(engine), "play", str(args.input)]
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as error:
         return error.returncode

@@ -447,10 +447,41 @@ static int record_microphone(uint32_t seconds, const char *output_path)
 }
 #endif
 
+static int play_audio(const char *input_path)
+{
+    FILE *input = fopen(input_path, "rb");
+    wav_info info = {0};
+
+    if (input == NULL) {
+        fprintf(stderr, "Could not open input WAV file.\n");
+        return 0;
+    }
+    if (!parse_wav(input, &info)) {
+        fprintf(stderr, "Input must be a valid 16-bit PCM WAV with one or two channels.\n");
+        fclose(input);
+        return 0;
+    }
+    fclose(input);
+
+#ifdef _WIN32
+    if (!PlaySoundA(input_path, NULL, SND_FILENAME | SND_SYNC)) {
+        fprintf(stderr, "Windows could not play this WAV file.\n");
+        return 0;
+    }
+    return 1;
+#else
+    fprintf(stderr, "WAV playback is currently supported only on Windows.\n");
+    return 0;
+#endif
+}
+
 int main(int argc, char **argv)
 {
     if (argc == 4 && strcmp(argv[1], "prepare") == 0) {
         return prepare_audio(argv[2], argv[3]) ? 0 : 1;
+    }
+    if (argc == 3 && strcmp(argv[1], "play") == 0) {
+        return play_audio(argv[2]) ? 0 : 1;
     }
     if (argc == 4 && strcmp(argv[1], "record") == 0) {
         char *end = NULL;
@@ -474,6 +505,7 @@ int main(int argc, char **argv)
     } else {
         fprintf(stderr, "Usage: symvoice-audio record <seconds> <output.wav>\n");
         fprintf(stderr, "       symvoice-audio prepare <input.wav> <output.wav>\n");
+        fprintf(stderr, "       symvoice-audio play <input.wav>\n");
     }
     return 2;
 }

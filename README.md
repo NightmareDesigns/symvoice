@@ -42,5 +42,14 @@ The command records for the requested number of seconds (1–3600) and saves a
 mono, 16 kHz, 16-bit PCM WAV. It uses the Windows default recording device;
 microphone recording is not available on other platforms.
 
+### Play a recording
+
+```powershell
+python python/symvoice.py play voice.wav
+```
+
+Playback uses the Windows default audio device and accepts valid 16-bit PCM WAV
+files with one or two channels. Playback is not available on other platforms.
+
 The Python command locates the native executable in `build`. To use a different
 build location, pass `--engine path\to\symvoice-audio.exe`.

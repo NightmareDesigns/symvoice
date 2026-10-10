@@ -85,6 +85,23 @@ class PrepareAudioTests(unittest.TestCase):
         self.assertIn(b"only on Windows", result.stderr)
         self.assertFalse(self.output_path.exists())
 
+    def test_playback_rejects_invalid_wav(self):
+        self.input_path.write_bytes(b"not a WAV file")
+        result = subprocess.run(
+            [ENGINE, "play", self.input_path], capture_output=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"valid 16-bit PCM WAV", result.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows playback depends on an audio device")
+    def test_playback_is_reported_as_unsupported_off_windows(self):
+        write_wav(self.input_path, 1, 16000, [0, 1000, -1000])
+        result = subprocess.run(
+            [ENGINE, "play", self.input_path], capture_output=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"only on Windows", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
