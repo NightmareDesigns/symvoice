@@ -43,7 +43,6 @@ static int parse_wav(FILE *file, wav_info *info)
     unsigned char format[16];
     long file_size;
     uint32_t riff_size;
-    uint32_t format_size = 0;
     long format_offset = 0;
     int found_format = 0;
     int found_data = 0;
@@ -84,7 +83,6 @@ static int parse_wav(FILE *file, wav_info *info)
                 return 0;
             }
             format_offset = chunk_offset;
-            format_size = chunk_size;
             found_format = 1;
         } else if (memcmp(chunk_header, "data", 4) == 0 && !found_data) {
             info->data_offset = chunk_offset;
@@ -111,7 +109,7 @@ static int parse_wav(FILE *file, wav_info *info)
         && read_u16(format + 14) == 16
         && info->sample_rate > 0
         && info->block_align == info->channels * 2U
-        && read_u32(format + 8) == info->sample_rate * info->block_align
+        && (uint64_t)read_u32(format + 8) == (uint64_t)info->sample_rate * info->block_align
         && info->data_size > 0
         && info->data_size % info->block_align == 0;
 }
@@ -163,12 +161,13 @@ static int prepare_audio(const char *input_path, const char *output_path)
     FILE *output = NULL;
     unsigned char *source_bytes = NULL;
     int32_t *mono_samples = NULL;
-    wav_info info;
+    wav_info info = {0};
     uint64_t frame_count;
     uint64_t output_count;
     uint64_t output_index;
     uint64_t output_bytes;
     int success = 0;
+    int output_opened = 0;
 
     input = fopen(input_path, "rb");
     if (input == NULL) {
@@ -186,7 +185,9 @@ static int prepare_audio(const char *input_path, const char *output_path)
         output_count = 1;
     }
     output_bytes = output_count * 2U;
-    if (output_bytes > UINT32_MAX - 36U || output_count > SIZE_MAX / sizeof(*mono_samples)) {
+    if (output_bytes > UINT32_MAX - 36U
+        || frame_count > SIZE_MAX / sizeof(*mono_samples)
+        || output_count > SIZE_MAX / sizeof(*mono_samples)) {
         fprintf(stderr, "Audio is too long for a standard WAV file.\n");
         goto cleanup;
     }
@@ -215,6 +216,7 @@ static int prepare_audio(const char *input_path, const char *output_path)
         fprintf(stderr, "Could not open output WAV file.\n");
         goto cleanup;
     }
+    output_opened = 1;
     if (!write_wav_header(output, (uint32_t)output_count)) {
         fprintf(stderr, "Could not write output WAV header.\n");
         goto cleanup;
@@ -260,7 +262,7 @@ cleanup:
     }
     free(mono_samples);
     free(source_bytes);
-    if (!success) {
+    if (!success && output_opened) {
         remove(output_path);
     }
     return success;

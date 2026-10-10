@@ -34,8 +34,8 @@ class PrepareAudioTests(unittest.TestCase):
     def read_wav(self):
         with wave.open(str(self.output_path), "rb") as audio:
             metadata = audio.getparams()
-            samples = struct.unpack("<" + "h" * (len(audio.readframes(audio.getnframes())) // 2),
-                                    self.output_path.read_bytes()[44:])
+            frames = audio.readframes(audio.getnframes())
+            samples = struct.unpack("<" + "h" * (len(frames) // 2), frames)
         return metadata, samples
 
     def test_mono_16khz_samples_are_preserved(self):
