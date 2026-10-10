@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 
 SAMPLE_RATE = 16000
 MANIFEST_NAME = "manifest.json"
+WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 
 
 def find_engine():
@@ -62,6 +64,10 @@ def checked_sample_path(dataset, entry):
     return dataset / relative
 
 
+def text_words(text):
+    return WORD_PATTERN.findall(text.casefold())
+
+
 def write_manifest(dataset, manifest):
     descriptor, temporary_name = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=dataset)
     temporary = Path(temporary_name)
@@ -87,15 +93,26 @@ def init_dataset(dataset):
     print(f"Initialized voice corpus at {dataset}")
 
 
-def add_sample(dataset, input_path, text, engine):
+def add_sample(dataset, input_path, text, engine, kind="utterance"):
     transcript = text.strip()
     if not transcript:
         raise ValueError("sample text must not be empty")
+    if kind not in ("utterance", "word"):
+        raise ValueError("unknown voice sample type")
+    if kind == "word" and len(text_words(transcript)) != 1:
+        raise ValueError("a word recording must contain exactly one word")
     dataset = dataset.resolve()
     manifest = read_manifest(dataset)
     audio_dir = dataset / "audio"
     if not audio_dir.is_dir():
         raise ValueError("corpus audio directory is missing")
+    if kind == "word":
+        target_word = text_words(transcript)[0]
+        for entry in manifest["samples"]:
+            if not isinstance(entry, dict):
+                raise ValueError("corpus manifest contains an invalid sample entry")
+            if entry.get("kind") == "word" and text_words(entry.get("text", "")) == [target_word]:
+                raise ValueError(f"word is already recorded in this corpus: {target_word}")
 
     sample_id = uuid.uuid4().hex
     final_path = audio_dir / f"{sample_id}.wav"
@@ -110,6 +127,7 @@ def add_sample(dataset, input_path, text, engine):
             "id": sample_id,
             "audio": f"audio/{sample_id}.wav",
             "text": transcript,
+            "kind": kind,
             "duration_seconds": round(duration, 6),
         })
         try:
@@ -126,7 +144,7 @@ def add_sample(dataset, input_path, text, engine):
     print(f"Added {final_path.name} ({duration:.2f}s): {transcript}")
 
 
-def record_sample(dataset, seconds, text, engine):
+def record_sample(dataset, seconds, text, engine, kind="utterance"):
     dataset = dataset.resolve()
     read_manifest(dataset)
     descriptor, temporary_name = tempfile.mkstemp(prefix=".recording-", suffix=".wav", dir=dataset)
@@ -135,7 +153,7 @@ def record_sample(dataset, seconds, text, engine):
     try:
         print(f"Say this phrase after recording starts: {text}", flush=True)
         subprocess.run([str(engine), "record", str(seconds), str(temporary)], check=True)
-        add_sample(dataset, temporary, text, engine)
+        add_sample(dataset, temporary, text, engine, kind=kind)
     except subprocess.CalledProcessError as error:
         raise ValueError(f"microphone recording failed with exit code {error.returncode}") from error
     finally:
@@ -166,9 +184,75 @@ def validate_dataset(dataset):
         if (not isinstance(sample_id, str) or not sample_id
                 or sample_id in identifiers or not isinstance(text, str) or not text.strip()):
             raise ValueError("corpus manifest contains a missing or duplicate ID or empty transcript")
+        kind = entry.get("kind", "utterance")
+        if kind not in ("utterance", "word") or (kind == "word" and len(text_words(text)) != 1):
+            raise ValueError("corpus manifest contains an invalid sample type or word transcript")
         identifiers.add(sample_id)
         sample_info(path)
     print(f"Corpus is valid: {len(identifiers)} sample(s)")
+
+
+def synthesize_text(dataset, output_path, text, engine):
+    words = text_words(text)
+    if not words:
+        raise ValueError("text must contain at least one word")
+    if len(words) > 64:
+        raise ValueError("this initial synthesizer supports up to 64 words per utterance")
+
+    dataset = dataset.resolve()
+    manifest = read_manifest(dataset)
+    lexicon = {}
+    phrases = []
+    for entry in manifest["samples"]:
+        if not isinstance(entry, dict):
+            raise ValueError("corpus manifest contains an invalid sample entry")
+        tokens = text_words(entry.get("text", ""))
+        if entry.get("kind", "utterance") == "utterance":
+            if tokens:
+                phrases.append((tokens, checked_sample_path(dataset, entry)))
+        elif entry.get("kind") == "word":
+            if len(tokens) != 1:
+                raise ValueError("corpus contains an invalid word recording")
+            if tokens[0] in lexicon:
+                raise ValueError(f"corpus has duplicate recordings for: {tokens[0]}")
+            lexicon[tokens[0]] = checked_sample_path(dataset, entry)
+
+    phrases.sort(key=lambda phrase: len(phrase[0]), reverse=True)
+    selected_paths = []
+    missing = set()
+    position = 0
+    while position < len(words):
+        phrase = next(
+            ((phrase_words, path) for phrase_words, path in phrases
+             if words[position:position + len(phrase_words)] == phrase_words),
+            None,
+        )
+        if phrase is not None:
+            phrase_words, path = phrase
+            selected_paths.append(path)
+            position += len(phrase_words)
+            continue
+        word = words[position]
+        if word in lexicon:
+            selected_paths.append(lexicon[word])
+        else:
+            missing.add(word)
+        position += 1
+    if missing:
+        raise ValueError("record these words or phrases first: " + ", ".join(sorted(missing)))
+
+    if not selected_paths:
+        raise ValueError("no matching recorded audio was found")
+    destination = output_path.resolve()
+    if any(path.resolve() == destination for path in selected_paths):
+        raise ValueError("synthesis output must not overwrite a recorded sample")
+    command = [str(engine), "synthesize", str(output_path)]
+    command.extend(str(path) for path in selected_paths)
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"native synthesis failed with exit code {error.returncode}") from error
+    print(f"Created speech WAV: {output_path}")
 
 
 def main():
@@ -203,6 +287,21 @@ def main():
     listing.add_argument("directory", type=Path)
     validate = dataset_commands.add_parser("validate", help="check corpus metadata and WAV files")
     validate.add_argument("directory", type=Path)
+    word_add = dataset_commands.add_parser("word-add", help="add one normalized word recording to the voice lexicon")
+    word_add.add_argument("directory", type=Path)
+    word_add.add_argument("input", type=Path)
+    word_add.add_argument("--text", required=True, help="single word spoken in the recording")
+    word_add.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
+    word_record = dataset_commands.add_parser("word-record", help="record one word for the voice lexicon")
+    word_record.add_argument("directory", type=Path)
+    word_record.add_argument("--text", required=True, help="single word to speak")
+    word_record.add_argument("--seconds", type=int, default=2, help="recording length from 1 to 3600 seconds")
+    word_record.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
+    speak = dataset_commands.add_parser("speak", help="synthesize text from recorded word samples")
+    speak.add_argument("directory", type=Path)
+    speak.add_argument("output", type=Path)
+    speak.add_argument("--text", required=True, help="text using only words in this corpus")
+    speak.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
     args = parser.parse_args()
 
     try:
@@ -215,6 +314,18 @@ def main():
         if args.command == "dataset" and args.dataset_command == "validate":
             validate_dataset(args.directory)
             return 0
+        if args.command == "dataset" and args.dataset_command == "word-add":
+            engine = args.engine or find_engine()
+            if engine is None or not engine.is_file():
+                parser.error("native engine not found; build it with CMake or pass --engine")
+            add_sample(args.directory, args.input, args.text, engine, kind="word")
+            return 0
+        if args.command == "dataset" and args.dataset_command == "speak":
+            engine = args.engine or find_engine()
+            if engine is None or not engine.is_file():
+                parser.error("native engine not found; build it with CMake or pass --engine")
+            synthesize_text(args.directory, args.output, args.text, engine)
+            return 0
 
         engine = args.engine or find_engine()
         if engine is None or not engine.is_file():
@@ -225,16 +336,22 @@ def main():
             command = [str(engine), "record", str(args.seconds), str(args.output)]
         elif args.command == "play":
             command = [str(engine), "play", str(args.input)]
-        elif args.dataset_command == "add":
+        elif args.command == "dataset" and args.dataset_command == "add":
             add_sample(args.directory, args.input, args.text, engine)
             return 0
-        else:
+        elif args.command == "dataset" and args.dataset_command == "record":
             if args.seconds < 1 or args.seconds > 3600:
                 raise ValueError("recording duration must be between 1 and 3600 seconds")
             if not args.text.strip():
                 raise ValueError("sample text must not be empty")
             record_sample(args.directory, args.seconds, args.text, engine)
             return 0
+        else:
+            if args.seconds < 1 or args.seconds > 3600:
+                raise ValueError("recording duration must be between 1 and 3600 seconds")
+            if len(text_words(args.text)) != 1:
+                raise ValueError("a word recording must contain exactly one word")
+            record_sample(args.directory, args.seconds, args.text, engine, kind="word")
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as error:
         return error.returncode

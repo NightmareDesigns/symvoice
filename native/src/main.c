@@ -11,6 +11,8 @@
 
 #define TARGET_SAMPLE_RATE 16000U
 #define MAX_RECORD_SECONDS 3600U
+#define MAX_SYNTH_WORDS 64U
+#define WORD_PAUSE_SAMPLES 320U
 
 typedef struct {
     uint16_t channels;
@@ -447,6 +449,111 @@ static int record_microphone(uint32_t seconds, const char *output_path)
 }
 #endif
 
+static int wav_is_synthesis_format(const wav_info *info)
+{
+    return info->channels == 1
+        && info->sample_rate == TARGET_SAMPLE_RATE
+        && info->block_align == 2;
+}
+
+static int synthesize_words(const char *output_path, int word_count, char **word_paths)
+{
+    FILE *output = NULL;
+    uint64_t total_samples = word_count > 0 ? (uint64_t)(word_count - 1) * WORD_PAUSE_SAMPLES : 0;
+    int success = 0;
+    int output_opened = 0;
+
+    if (word_count < 1 || word_count > (int)MAX_SYNTH_WORDS) {
+        fprintf(stderr, "Speech requires between 1 and %u recorded words.\n", MAX_SYNTH_WORDS);
+        return 0;
+    }
+
+    for (int index = 0; index < word_count; ++index) {
+        FILE *input = fopen(word_paths[index], "rb");
+        wav_info info = {0};
+        uint64_t samples;
+
+        if (input == NULL || !parse_wav(input, &info) || !wav_is_synthesis_format(&info)) {
+            fprintf(stderr, "Word audio must be valid mono 16-bit 16 kHz PCM WAV: %s\n",
+                    word_paths[index]);
+            if (input != NULL) {
+                fclose(input);
+            }
+            return 0;
+        }
+        fclose(input);
+        samples = info.data_size / info.block_align;
+        if (UINT32_MAX / 2U < total_samples + samples) {
+            fprintf(stderr, "Synthesized audio is too long for a standard WAV file.\n");
+            return 0;
+        }
+        total_samples += samples;
+    }
+
+    output = fopen(output_path, "wb");
+    if (output == NULL) {
+        fprintf(stderr, "Could not open synthesized output WAV file.\n");
+        goto cleanup;
+    }
+    output_opened = 1;
+    if (!write_wav_header(output, (uint32_t)total_samples)) {
+        fprintf(stderr, "Could not write synthesized WAV header.\n");
+        goto cleanup;
+    }
+
+    for (int index = 0; index < word_count; ++index) {
+        FILE *input = fopen(word_paths[index], "rb");
+        wav_info info = {0};
+        unsigned char buffer[8192];
+        uint32_t remaining;
+
+        if (input == NULL || !parse_wav(input, &info) || !wav_is_synthesis_format(&info)
+            || !seek_to(input, info.data_offset)) {
+            fprintf(stderr, "Could not read word audio: %s\n", word_paths[index]);
+            if (input != NULL) {
+                fclose(input);
+            }
+            goto cleanup;
+        }
+
+        remaining = info.data_size;
+        while (remaining > 0) {
+            size_t chunk = remaining < sizeof(buffer) ? remaining : sizeof(buffer);
+            if (!read_exact(input, buffer, chunk) || fwrite(buffer, 1, chunk, output) != chunk) {
+                fprintf(stderr, "Could not copy word audio: %s\n", word_paths[index]);
+                fclose(input);
+                goto cleanup;
+            }
+            remaining -= (uint32_t)chunk;
+        }
+        fclose(input);
+
+        if (index + 1 < word_count) {
+            for (uint32_t pause = 0; pause < WORD_PAUSE_SAMPLES; ++pause) {
+                if (!write_u16(output, 0)) {
+                    fprintf(stderr, "Could not write speech pause.\n");
+                    goto cleanup;
+                }
+            }
+        }
+    }
+
+    if (fflush(output) != 0) {
+        fprintf(stderr, "Could not finish synthesized WAV file.\n");
+        goto cleanup;
+    }
+    success = 1;
+
+cleanup:
+    if (output != NULL && fclose(output) != 0) {
+        success = 0;
+    }
+    if (!success && output_opened) {
+        remove(output_path);
+    }
+    return success;
+}
+
 static int play_audio(const char *input_path)
 {
     FILE *input = fopen(input_path, "rb");
@@ -483,6 +590,9 @@ int main(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "play") == 0) {
         return play_audio(argv[2]) ? 0 : 1;
     }
+    if (argc >= 4 && strcmp(argv[1], "synthesize") == 0) {
+        return synthesize_words(argv[2], argc - 3, argv + 3) ? 0 : 1;
+    }
     if (argc == 4 && strcmp(argv[1], "record") == 0) {
         char *end = NULL;
         unsigned long seconds;
@@ -506,6 +616,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "Usage: symvoice-audio record <seconds> <output.wav>\n");
         fprintf(stderr, "       symvoice-audio prepare <input.wav> <output.wav>\n");
         fprintf(stderr, "       symvoice-audio play <input.wav>\n");
+        fprintf(stderr, "       symvoice-audio synthesize <output.wav> <word.wav> [word.wav ...]\n");
     }
     return 2;
 }

@@ -67,7 +67,21 @@ python python/symvoice.py dataset list my-voice
 Each sample is normalized to mono 16 kHz PCM and stored under `audio/`; the
 transcripts and relative audio paths are kept in `manifest.json`. Record only
 your own voice or audio you have permission to use. This creates a labeled
-recording corpus; **it does not train a voice model or generate speech yet**.
+recording corpus. To create a simple spoken WAV using previously recorded
+individual words:
+
+```powershell
+python python/symvoice.py dataset word-record my-voice --text "hello"
+python python/symvoice.py dataset word-add my-voice another-word.wav --text "world"
+python python/symvoice.py dataset speak my-voice response.wav --text "Hello, world!"
+```
+
+This first speech output uses the longest matching recorded utterances, then
+falls back to individual word clips joined with short silences. It supports up
+to 64 words per output and requires recordings that cover all requested words
+or phrases. It is not natural continuous TTS or a trained voice model.
+Punctuation and prosody are not synthesized; text is matched without regard
+to case.
 
 The Python command locates the native executable in `build`. To use a different
 build location, pass `--engine path\to\symvoice-audio.exe`.

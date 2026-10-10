@@ -186,6 +186,84 @@ class VoiceDatasetTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"between 1 and 3600", result.stderr)
 
+    def add_word(self, text, samples):
+        write_wav(self.input_path, 1, 16000, samples)
+        return self.run_cli(
+            "dataset", "word-add", self.dataset, self.input_path, "--text", text,
+            "--engine", ENGINE)
+
+    def test_recorded_words_synthesize_to_wav_with_a_short_join_pause(self):
+        self.assertEqual(self.add_word("Hello", [1000, 2000]).returncode, 0)
+        self.assertEqual(self.add_word("world", [-1000, -2000]).returncode, 0)
+        output_path = self.directory / "spoken.wav"
+
+        result = self.run_cli(
+            "dataset", "speak", self.dataset, output_path, "--text", "HELLO, world!",
+            "--engine", ENGINE)
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        with wave.open(str(output_path), "rb") as audio:
+            self.assertEqual(
+                (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()),
+                (1, 2, 16000),
+            )
+            frames = audio.readframes(audio.getnframes())
+        samples = struct.unpack("<" + "h" * (len(frames) // 2), frames)
+        self.assertEqual(samples[:2], (1000, 2000))
+        self.assertEqual(samples[2:322], (0,) * 320)
+        self.assertEqual(samples[322:], (-1000, -2000))
+
+    def test_synthesis_reports_missing_words_without_creating_output(self):
+        output_path = self.directory / "spoken.wav"
+
+        result = self.run_cli(
+            "dataset", "speak", self.dataset, output_path, "--text", "unrecorded",
+            "--engine", ENGINE)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"record these words or phrases first", result.stderr)
+        self.assertFalse(output_path.exists())
+
+    def test_synthesis_prefers_a_recorded_phrase_to_individual_words(self):
+        write_wav(self.input_path, 1, 16000, [3000, -3000, 2000])
+        added = self.run_cli(
+            "dataset", "add", self.dataset, self.input_path, "--text", "Hello there.",
+            "--engine", ENGINE)
+        self.assertEqual(added.returncode, 0, added.stderr.decode())
+        output_path = self.directory / "spoken.wav"
+
+        result = self.run_cli(
+            "dataset", "speak", self.dataset, output_path, "--text", "HELLO, there!",
+            "--engine", ENGINE)
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        with wave.open(str(output_path), "rb") as audio:
+            self.assertEqual(audio.getnframes(), 3)
+            self.assertEqual(
+                struct.unpack("<hhh", audio.readframes(3)),
+                (3000, -3000, 2000),
+            )
+
+    def test_synthesis_cannot_overwrite_a_recorded_word(self):
+        self.assertEqual(self.add_word("hello", [1000, 2000]).returncode, 0)
+        manifest = json.loads((self.dataset / "manifest.json").read_text(encoding="utf-8"))
+        word_path = self.dataset / manifest["samples"][0]["audio"]
+
+        result = self.run_cli(
+            "dataset", "speak", self.dataset, word_path, "--text", "hello",
+            "--engine", ENGINE)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"must not overwrite", result.stderr)
+        self.assertEqual(wave.open(str(word_path), "rb").getnframes(), 2)
+
+    def test_word_recording_rejects_duplicate_word(self):
+        self.assertEqual(self.add_word("Hello!", [1000]).returncode, 0)
+        result = self.add_word("hello", [2000])
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"already recorded", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
