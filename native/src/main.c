@@ -3,7 +3,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <mmsystem.h>
+#endif
+
 #define TARGET_SAMPLE_RATE 16000U
+#define MAX_RECORD_SECONDS 3600U
 
 typedef struct {
     uint16_t channels;
@@ -268,11 +275,205 @@ cleanup:
     return success;
 }
 
+#ifdef _WIN32
+static void report_wave_error(const char *operation, MMRESULT result)
+{
+    char message[MAXERRORLENGTH];
+
+    if (waveInGetErrorTextA(result, message, MAXERRORLENGTH) == MMSYSERR_NOERROR) {
+        fprintf(stderr, "%s: %s\n", operation, message);
+    } else {
+        fprintf(stderr, "%s failed (Windows audio error %u).\n", operation, result);
+    }
+}
+
+static int record_microphone(uint32_t seconds, const char *output_path)
+{
+    const DWORD buffer_size = TARGET_SAMPLE_RATE * 2U;
+    const uint32_t sample_count = TARGET_SAMPLE_RATE * seconds;
+    const uint64_t total_bytes = (uint64_t)sample_count * 2U;
+    WAVEFORMATEX format = {0};
+    WAVEHDR headers[2] = {{0}};
+    HANDLE event = NULL;
+    HWAVEIN input = NULL;
+    FILE *output = NULL;
+    unsigned char *buffers[2] = {NULL, NULL};
+    int prepared[2] = {0, 0};
+    uint64_t remaining_bytes = total_bytes;
+    int success = 0;
+    MMRESULT result;
+
+    event = CreateEventA(NULL, FALSE, FALSE, NULL);
+    if (event == NULL) {
+        fprintf(stderr, "Could not create microphone capture event.\n");
+        goto cleanup;
+    }
+
+    format.wFormatTag = WAVE_FORMAT_PCM;
+    format.nChannels = 1;
+    format.nSamplesPerSec = TARGET_SAMPLE_RATE;
+    format.wBitsPerSample = 16;
+    format.nBlockAlign = 2;
+    format.nAvgBytesPerSec = TARGET_SAMPLE_RATE * format.nBlockAlign;
+    format.cbSize = 0;
+    result = waveInOpen(&input, WAVE_MAPPER, &format, (DWORD_PTR)event, 0, CALLBACK_EVENT);
+    if (result != MMSYSERR_NOERROR) {
+        report_wave_error("Could not open a 16 kHz microphone input", result);
+        goto cleanup;
+    }
+
+    output = fopen(output_path, "wb");
+    if (output == NULL) {
+        fprintf(stderr, "Could not open output WAV file.\n");
+        goto cleanup;
+    }
+    if (!write_wav_header(output, sample_count)) {
+        fprintf(stderr, "Could not write output WAV header.\n");
+        goto cleanup;
+    }
+
+    for (unsigned int index = 0; index < 2; ++index) {
+        buffers[index] = (unsigned char *)malloc(buffer_size);
+        if (buffers[index] == NULL) {
+            fprintf(stderr, "Not enough memory to record audio.\n");
+            goto cleanup;
+        }
+        headers[index].lpData = (LPSTR)buffers[index];
+        headers[index].dwBufferLength = buffer_size;
+        result = waveInPrepareHeader(input, &headers[index], sizeof(headers[index]));
+        if (result != MMSYSERR_NOERROR) {
+            report_wave_error("Could not prepare microphone capture buffer", result);
+            goto cleanup;
+        }
+        prepared[index] = 1;
+        result = waveInAddBuffer(input, &headers[index], sizeof(headers[index]));
+        if (result != MMSYSERR_NOERROR) {
+            report_wave_error("Could not queue microphone capture buffer", result);
+            goto cleanup;
+        }
+    }
+
+    result = waveInStart(input);
+    if (result != MMSYSERR_NOERROR) {
+        report_wave_error("Could not start microphone capture", result);
+        goto cleanup;
+    }
+
+    while (remaining_bytes > 0) {
+        DWORD wait_result = WaitForSingleObject(event, INFINITE);
+        int completed = 0;
+
+        if (wait_result != WAIT_OBJECT_0) {
+            fprintf(stderr, "Waiting for microphone audio failed.\n");
+            goto cleanup;
+        }
+
+        for (unsigned int index = 0; index < 2 && remaining_bytes > 0; ++index) {
+            DWORD bytes_to_write;
+
+            if ((headers[index].dwFlags & WHDR_DONE) == 0) {
+                continue;
+            }
+            completed = 1;
+            if (headers[index].dwBytesRecorded > headers[index].dwBufferLength
+                || headers[index].dwBytesRecorded % format.nBlockAlign != 0) {
+                fprintf(stderr, "Microphone returned an invalid audio buffer.\n");
+                goto cleanup;
+            }
+
+            bytes_to_write = headers[index].dwBytesRecorded;
+            if ((uint64_t)bytes_to_write > remaining_bytes) {
+                bytes_to_write = (DWORD)remaining_bytes;
+            }
+            if (bytes_to_write > 0
+                && fwrite(headers[index].lpData, 1, bytes_to_write, output) != bytes_to_write) {
+                fprintf(stderr, "Could not write recorded audio.\n");
+                goto cleanup;
+            }
+            remaining_bytes -= bytes_to_write;
+
+            if (remaining_bytes > 0) {
+                headers[index].dwBytesRecorded = 0;
+                result = waveInAddBuffer(input, &headers[index], sizeof(headers[index]));
+                if (result != MMSYSERR_NOERROR) {
+                    report_wave_error("Could not requeue microphone capture buffer", result);
+                    goto cleanup;
+                }
+            }
+        }
+        if (!completed) {
+            fprintf(stderr, "Microphone signaled without a completed audio buffer.\n");
+            goto cleanup;
+        }
+    }
+
+    if (fflush(output) != 0) {
+        fprintf(stderr, "Could not finish writing recorded audio.\n");
+        goto cleanup;
+    }
+    success = 1;
+
+cleanup:
+    if (input != NULL) {
+        waveInReset(input);
+        for (unsigned int index = 0; index < 2; ++index) {
+            if (prepared[index]) {
+                waveInUnprepareHeader(input, &headers[index], sizeof(headers[index]));
+            }
+        }
+        waveInClose(input);
+    }
+    if (output != NULL && fclose(output) != 0) {
+        success = 0;
+    }
+    if (!success && output != NULL) {
+        remove(output_path);
+    }
+    for (unsigned int index = 0; index < 2; ++index) {
+        free(buffers[index]);
+    }
+    if (event != NULL) {
+        CloseHandle(event);
+    }
+    return success;
+}
+#else
+static int record_microphone(uint32_t seconds, const char *output_path)
+{
+    (void)seconds;
+    (void)output_path;
+    fprintf(stderr, "Microphone recording is currently supported only on Windows.\n");
+    return 0;
+}
+#endif
+
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: symvoice-audio <input.wav> <output.wav>\n");
-        return 2;
+    if (argc == 4 && strcmp(argv[1], "prepare") == 0) {
+        return prepare_audio(argv[2], argv[3]) ? 0 : 1;
     }
-    return prepare_audio(argv[1], argv[2]) ? 0 : 1;
+    if (argc == 4 && strcmp(argv[1], "record") == 0) {
+        char *end = NULL;
+        unsigned long seconds;
+
+        if (argv[2][0] == '\0' || argv[2][0] == '-') {
+            fprintf(stderr, "Recording duration must be between 1 and %u seconds.\n",
+                    MAX_RECORD_SECONDS);
+            return 2;
+        }
+        seconds = strtoul(argv[2], &end, 10);
+        if (end == argv[2] || *end != '\0' || seconds == 0 || seconds > MAX_RECORD_SECONDS) {
+            fprintf(stderr, "Recording duration must be between 1 and %u seconds.\n",
+                    MAX_RECORD_SECONDS);
+            return 2;
+        }
+        return record_microphone((uint32_t)seconds, argv[3]) ? 0 : 1;
+    }
+    if (argc == 3) {
+        fprintf(stderr, "Usage: symvoice-audio prepare <input.wav> <output.wav>\n");
+    } else {
+        fprintf(stderr, "Usage: symvoice-audio record <seconds> <output.wav>\n");
+        fprintf(stderr, "       symvoice-audio prepare <input.wav> <output.wav>\n");
+    }
+    return 2;
 }

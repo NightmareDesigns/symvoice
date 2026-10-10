@@ -25,13 +25,21 @@ def main():
     prepare.add_argument("input", type=Path)
     prepare.add_argument("output", type=Path)
     prepare.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
+    record = commands.add_parser("record", help="record a mono 16 kHz WAV from a Windows microphone")
+    record.add_argument("seconds", type=int)
+    record.add_argument("output", type=Path)
+    record.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
     args = parser.parse_args()
 
     engine = args.engine or find_engine()
     if engine is None or not engine.is_file():
         parser.error("native engine not found; build it with CMake or pass --engine")
     try:
-        subprocess.run([str(engine), str(args.input), str(args.output)], check=True)
+        if args.command == "prepare":
+            command = [str(engine), "prepare", str(args.input), str(args.output)]
+        else:
+            command = [str(engine), "record", str(args.seconds), str(args.output)]
+        subprocess.run(command, check=True)
     except subprocess.CalledProcessError as error:
         return error.returncode
     return 0

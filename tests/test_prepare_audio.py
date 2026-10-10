@@ -40,7 +40,7 @@ class PrepareAudioTests(unittest.TestCase):
 
     def test_mono_16khz_samples_are_preserved(self):
         write_wav(self.input_path, 1, 16000, [0, 1000, -1000])
-        subprocess.run([ENGINE, self.input_path, self.output_path], check=True)
+        subprocess.run([ENGINE, "prepare", self.input_path, self.output_path], check=True)
 
         metadata, samples = self.read_wav()
         self.assertEqual((metadata.nchannels, metadata.sampwidth, metadata.framerate), (1, 2, 16000))
@@ -48,7 +48,7 @@ class PrepareAudioTests(unittest.TestCase):
 
     def test_audio_is_downmixed_and_resampled(self):
         write_wav(self.input_path, 2, 8000, [0, 0, 1000, 1000, 2000, 2000])
-        subprocess.run([ENGINE, self.input_path, self.output_path], check=True)
+        subprocess.run([ENGINE, "prepare", self.input_path, self.output_path], check=True)
 
         metadata, samples = self.read_wav()
         self.assertEqual(metadata.nframes, 6)
@@ -56,9 +56,24 @@ class PrepareAudioTests(unittest.TestCase):
 
     def test_unsupported_sample_width_is_rejected(self):
         write_wav(self.input_path, 1, 16000, [128, 129], sample_width=1)
-        result = subprocess.run([ENGINE, self.input_path, self.output_path], capture_output=True)
+        result = subprocess.run(
+            [ENGINE, "prepare", self.input_path, self.output_path], capture_output=True)
 
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output_path.exists())
+
+    def test_recording_rejects_zero_duration_without_opening_microphone(self):
+        result = subprocess.run(
+            [ENGINE, "record", "0", self.output_path], capture_output=True)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.output_path.exists())
+
+    def test_recording_rejects_duration_above_limit(self):
+        result = subprocess.run(
+            [ENGINE, "record", "3601", self.output_path], capture_output=True)
+
+        self.assertEqual(result.returncode, 2)
         self.assertFalse(self.output_path.exists())
 
 

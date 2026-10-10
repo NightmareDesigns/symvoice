@@ -7,6 +7,10 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 add_executable(symvoice-audio native/src/main.c)
 
+if(WIN32)
+    target_link_libraries(symvoice-audio PRIVATE winmm)
+endif()
+
 if(MSVC)
     target_compile_options(symvoice-audio PRIVATE /W4)
 else()
