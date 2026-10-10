@@ -13,6 +13,8 @@
 #define MAX_RECORD_SECONDS 3600U
 #define MAX_SYNTH_WORDS 64U
 #define WORD_PAUSE_SAMPLES 320U
+#define SILENCE_THRESHOLD 256
+#define SILENCE_MARGIN_SAMPLES 1600U
 
 typedef struct {
     uint16_t channels;
@@ -162,6 +164,94 @@ static int write_wav_header(FILE *file, uint32_t sample_count)
         && write_u16(file, 16)
         && fwrite("data", 1, 4, file) == 4
         && write_u32(file, data_size);
+}
+
+static int wav_is_synthesis_format(const wav_info *info);
+
+static int trim_silence(const char *input_path, const char *output_path)
+{
+    FILE *input = fopen(input_path, "rb");
+    FILE *output = NULL;
+    unsigned char *samples = NULL;
+    wav_info info = {0};
+    uint64_t frame_count;
+    uint64_t first = UINT64_MAX;
+    uint64_t last = 0;
+    uint64_t start;
+    uint64_t end;
+    uint32_t output_count;
+    int success = 0;
+    int output_opened = 0;
+
+    if (input == NULL || !parse_wav(input, &info) || !wav_is_synthesis_format(&info)) {
+        fprintf(stderr, "Silence trimming requires mono 16-bit 16 kHz PCM WAV audio.\n");
+        if (input != NULL) {
+            fclose(input);
+        }
+        return 0;
+    }
+
+    samples = (unsigned char *)malloc(info.data_size);
+    if (samples == NULL || !seek_to(input, info.data_offset)
+        || !read_exact(input, samples, info.data_size)) {
+        fprintf(stderr, "Could not read audio for silence trimming.\n");
+        goto cleanup;
+    }
+    frame_count = info.data_size / info.block_align;
+    for (uint64_t frame = 0; frame < frame_count; ++frame) {
+        int32_t sample = decode_sample(samples + frame * info.block_align);
+        if (sample >= SILENCE_THRESHOLD || sample <= -SILENCE_THRESHOLD) {
+            if (first == UINT64_MAX) {
+                first = frame;
+            }
+            last = frame;
+        }
+    }
+    if (first == UINT64_MAX) {
+        fprintf(stderr, "No voice activity detected; recording is silent or below the capture threshold.\n");
+        goto cleanup;
+    }
+
+    start = first > SILENCE_MARGIN_SAMPLES ? first - SILENCE_MARGIN_SAMPLES : 0;
+    end = last + 1U + SILENCE_MARGIN_SAMPLES;
+    if (end > frame_count) {
+        end = frame_count;
+    }
+    output_count = (uint32_t)(end - start);
+
+    if (fclose(input) != 0) {
+        input = NULL;
+        fprintf(stderr, "Could not close source WAV file.\n");
+        goto cleanup;
+    }
+    input = NULL;
+    output = fopen(output_path, "wb");
+    if (output == NULL) {
+        fprintf(stderr, "Could not open trimmed WAV output file.\n");
+        goto cleanup;
+    }
+    output_opened = 1;
+    if (!write_wav_header(output, output_count)
+        || fwrite(samples + start * info.block_align, info.block_align,
+                  output_count, output) != output_count
+        || fflush(output) != 0) {
+        fprintf(stderr, "Could not write trimmed WAV output file.\n");
+        goto cleanup;
+    }
+    success = 1;
+
+cleanup:
+    if (input != NULL) {
+        fclose(input);
+    }
+    if (output != NULL && fclose(output) != 0) {
+        success = 0;
+    }
+    free(samples);
+    if (!success && output_opened) {
+        remove(output_path);
+    }
+    return success;
 }
 
 static int prepare_audio(const char *input_path, const char *output_path)
@@ -593,6 +683,9 @@ int main(int argc, char **argv)
     if (argc >= 4 && strcmp(argv[1], "synthesize") == 0) {
         return synthesize_words(argv[2], argc - 3, argv + 3) ? 0 : 1;
     }
+    if (argc == 4 && strcmp(argv[1], "trim") == 0) {
+        return trim_silence(argv[2], argv[3]) ? 0 : 1;
+    }
     if (argc == 4 && strcmp(argv[1], "record") == 0) {
         char *end = NULL;
         unsigned long seconds;
@@ -617,6 +710,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "       symvoice-audio prepare <input.wav> <output.wav>\n");
         fprintf(stderr, "       symvoice-audio play <input.wav>\n");
         fprintf(stderr, "       symvoice-audio synthesize <output.wav> <word.wav> [word.wav ...]\n");
+        fprintf(stderr, "       symvoice-audio trim <input.wav> <output.wav>\n");
     }
     return 2;
 }

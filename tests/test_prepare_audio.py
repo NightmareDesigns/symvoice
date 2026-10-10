@@ -34,7 +34,10 @@ class PrepareAudioTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def read_wav(self):
-        with wave.open(str(self.output_path), "rb") as audio:
+        return self.read_wav_from(self.output_path)
+
+    def read_wav_from(self, path):
+        with wave.open(str(path), "rb") as audio:
             metadata = audio.getparams()
             frames = audio.readframes(audio.getnframes())
             samples = struct.unpack("<" + "h" * (len(frames) // 2), frames)
@@ -62,6 +65,30 @@ class PrepareAudioTests(unittest.TestCase):
             [ENGINE, "prepare", self.input_path, self.output_path], capture_output=True)
 
         self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.output_path.exists())
+
+    def test_trim_removes_long_silent_edges_and_preserves_voice_margin(self):
+        samples = [0] * 6000
+        samples[2000:2101] = [1000] * 101
+        write_wav(self.input_path, 1, 16000, samples)
+
+        result = subprocess.run(
+            [ENGINE, "trim", self.input_path, self.output_path], capture_output=True)
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        metadata, trimmed = self.read_wav()
+        self.assertEqual(metadata.nframes, 3301)
+        self.assertEqual(trimmed[:1600], (0,) * 1600)
+        self.assertEqual(trimmed[1600:1701], (1000,) * 101)
+
+    def test_trim_rejects_silent_audio(self):
+        write_wav(self.input_path, 1, 16000, [0] * 100)
+
+        result = subprocess.run(
+            [ENGINE, "trim", self.input_path, self.output_path], capture_output=True)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.input_path.exists())
         self.assertFalse(self.output_path.exists())
 
     def test_recording_rejects_zero_duration_without_opening_microphone(self):

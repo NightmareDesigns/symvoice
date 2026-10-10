@@ -119,8 +119,17 @@ def add_sample(dataset, input_path, text, engine, kind="utterance"):
     descriptor, temporary_name = tempfile.mkstemp(prefix=".sample-", suffix=".wav", dir=audio_dir)
     os.close(descriptor)
     temporary = Path(temporary_name)
+    trim_temporary = None
     try:
         subprocess.run([str(engine), "prepare", str(input_path), str(temporary)], check=True)
+        if kind == "word":
+            trim_descriptor, trim_name = tempfile.mkstemp(
+                prefix=".trimmed-", suffix=".wav", dir=audio_dir)
+            os.close(trim_descriptor)
+            trim_temporary = Path(trim_name)
+            subprocess.run(
+                [str(engine), "trim", str(temporary), str(trim_temporary)], check=True)
+            os.replace(trim_temporary, temporary)
         duration = sample_info(temporary)
         os.replace(temporary, final_path)
         manifest["samples"].append({
@@ -141,6 +150,9 @@ def add_sample(dataset, input_path, text, engine, kind="utterance"):
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    finally:
+        if trim_temporary is not None:
+            trim_temporary.unlink(missing_ok=True)
     print(f"Added {final_path.name} ({duration:.2f}s): {transcript}")
 
 

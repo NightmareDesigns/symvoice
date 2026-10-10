@@ -64,8 +64,9 @@ python python/symvoice.py dataset validate my-voice
 python python/symvoice.py dataset list my-voice
 ```
 
-Each sample is normalized to mono 16 kHz PCM and stored under `audio/`; the
-transcripts and relative audio paths are kept in `manifest.json`. Record only
+Each sample is normalized to mono 16 kHz PCM and stored under `audio/`. Word
+clips have low-level silence trimmed at their edges while retaining a short
+margin. The transcripts and relative audio paths are kept in `manifest.json`. Record only
 your own voice or audio you have permission to use. This creates a labeled
 recording corpus. To create a simple spoken WAV using previously recorded
 individual words:
