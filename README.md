@@ -4,7 +4,7 @@ Symvoice is a Windows-focused, offline speech project built with native C and
 Python glue. The goal is to create a voice from recordings you own, use it to
 read AI-generated text, and make it available to Windows speech applications.
 
-## First milestone: prepare voice recordings
+## Current capabilities
 
 The initial native utility converts 16-bit PCM WAV recordings with one or two
 channels into mono, 16 kHz PCM WAV, a common input format for speech models.
@@ -12,8 +12,62 @@ It performs channel mixing and linear sample-rate conversion without third-party
 runtime libraries. On Windows it can also record up to one hour of mono, 16 kHz
 audio from the default microphone using the Windows multimedia API. Recording
 requires a microphone that supports this format. Symvoice can produce simple
-speech by joining recorded clips; neural voice training and Windows SAPI
-integration are not implemented yet.
+speech by joining recorded clips and includes an experimental SAPI 5 bridge.
+This is not neural voice training or unrestricted natural TTS.
+
+## Download a Windows PC test bundle
+
+The **Windows build and PC test bundle** workflow builds/tests both x64 and x86
+variants on Windows and uploads ZIP artifacts. After a push or workflow run,
+open the repository's **Actions** tab, select the latest successful workflow,
+and download `symvoice-windows-x64` (recommended for 64-bit apps) or
+`symvoice-windows-x86`. Artifacts are retained for 14 days. Alternatively, run
+the workflow manually using **Run workflow**.
+
+Extract the ZIP to a writable folder on your Windows PC. Install Python 3 if
+needed; the bundle contains the built C executable and SAPI DLL, but not Python.
+Open PowerShell in the extracted folder.
+
+1. Create a corpus and record a short phrase. Speak the exact phrase during
+   the entire recording; the initial recorder captures the specified duration:
+
+   ```powershell
+   python .\python\symvoice.py dataset init my-voice
+   python .\python\symvoice.py dataset record my-voice --text "Hello, this is my voice." --seconds 5
+   python .\python\symvoice.py dataset validate my-voice
+   ```
+
+2. In a first PowerShell window, start the local synthesis server and leave it
+   running:
+
+   ```powershell
+   python .\python\symvoice.py serve my-voice --port 8021
+   ```
+
+3. In a second PowerShell window, register the matching architecture for your
+   Windows user:
+
+   ```powershell
+   .\scripts\Register-Symvoice.ps1 -DllPath .\build\Release\symvoice-sapi.dll
+   ```
+
+4. Test it through Windows SAPI. Use a phrase recorded in the corpus:
+
+   ```powershell
+   .\scripts\Test-Symvoice-Sapi.ps1 -Text "Hello, this is my voice."
+   ```
+
+5. When finished, remove the per-user registration:
+
+   ```powershell
+   .\scripts\Unregister-Symvoice.ps1
+   ```
+
+The voice server must stay running while SAPI uses Symvoice. x64 DLLs are
+visible to 64-bit apps and x86 DLLs to 32-bit apps. Apps using non-SAPI speech
+APIs will not use this voice. The workflow verifies compilation and automated
+tests; microphone, audio playback, and live SAPI behavior still need a manual
+test on your PC.
 
 ### Build on Windows
 

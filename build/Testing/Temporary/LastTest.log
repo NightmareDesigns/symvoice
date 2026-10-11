@@ -1,0 +1,43 @@
+Start testing: Oct 11 05:01 UTC
+----------------------------------------------------------
+1/1 Testing: prepare-audio
+1/1 Test: prepare-audio
+Command: "/usr/bin/python3.12" "/home/runner/work/symvoice/symvoice/tests/test_prepare_audio.py" "/home/runner/work/symvoice/symvoice/build/symvoice-audio"
+Directory: /home/runner/work/symvoice/symvoice/build
+"prepare-audio" start time: Oct 11 05:01 UTC
+Output:
+----------------------------------------------------------
+..........Initialized voice corpus at /tmp/tmpiszpvjj5/voice
+.Initialized voice corpus at /tmp/tmpw3pj9u9k/voice
+.Initialized voice corpus at /tmp/tmplh45yrzb/voice
+.Initialized voice corpus at /tmp/tmpadv4tlci/voice
+.Initialized voice corpus at /tmp/tmpqysl_e3h/voice
+.Initialized voice corpus at /tmp/tmpa2gejeiq/voice
+.Initialized voice corpus at /tmp/tmpi3cdo6sj/voice
+.Initialized voice corpus at /tmp/tmpdmkwixuz/voice
+.Initialized voice corpus at /tmp/tmp7t66jovf/voice
+.Initialized voice corpus at /tmp/tmp65z3v0hj/voice
+.Initialized voice corpus at /tmp/tmpr71kmegu/voice
+.Initialized voice corpus at /tmp/tmpqokpf8v7/voice
+.Initialized voice corpus at /tmp/tmpgq9b5ohu/voice
+.Initialized voice corpus at /tmp/tmpppqehqa4/voice
+.Initialized voice corpus at /tmp/tmp01sjgekm/voice
+.Initialized voice corpus at /tmp/tmp46cyu8q9/voice
+.Initialized voice corpus at /tmp/tmpmmy4gnn2/voice
+.Initialized voice corpus at /tmp/tmp__nl6hsl/voice
+.Initialized voice corpus at /tmp/tmpo8kp9bvy/voice
+.Initialized voice corpus at /tmp/tmpt8ag3rvn/voice
+..
+----------------------------------------------------------------------
+Ran 31 tests in 6.791s
+
+OK
+<end of output>
+Test time =   6.88 sec
+----------------------------------------------------------
+Test Passed.
+"prepare-audio" end time: Oct 11 05:01 UTC
+"prepare-audio" time elapsed: 00:00:06
+----------------------------------------------------------
+
+End testing: Oct 11 05:01 UTC

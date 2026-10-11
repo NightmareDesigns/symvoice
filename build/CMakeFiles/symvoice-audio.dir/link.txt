@@ -1,0 +1,1 @@
+/usr/bin/cc -Wl,--dependency-file=CMakeFiles/symvoice-audio.dir/link.d "CMakeFiles/symvoice-audio.dir/native/src/main.c.o" -o symvoice-audio

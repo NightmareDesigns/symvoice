@@ -1,0 +1,79 @@
+name: Windows build and PC test bundle
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    name: ${{ matrix.name }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            architecture: x64
+            artifact_architecture: x64
+          - name: Windows x86
+            architecture: Win32
+            artifact_architecture: x86
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Configure
+        run: cmake -S . -B build/${{ matrix.artifact_architecture }} -A ${{ matrix.architecture }}
+
+      - name: Build
+        run: cmake --build build/${{ matrix.artifact_architecture }} --config Release --parallel
+
+      - name: Run tests
+        run: ctest --test-dir build/${{ matrix.artifact_architecture }} -C Release --output-on-failure
+
+      - name: Validate PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            "scripts/Register-Symvoice.ps1",
+            "scripts/Unregister-Symvoice.ps1",
+            "scripts/Test-Symvoice-Sapi.ps1",
+            "scripts/Package-Windows.ps1"
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Join-Path $PWD $file), [ref]$tokens, [ref]$errors
+            ) > $null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List
+              exit 1
+            }
+          }
+
+      - name: Package PC test bundle
+        shell: pwsh
+        run: |
+          .\scripts\Package-Windows.ps1 `
+            -BuildDirectory "build/${{ matrix.artifact_architecture }}" `
+            -Architecture "${{ matrix.artifact_architecture }}" `
+            -OutputDirectory dist
+
+      - name: Upload PC test bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: symvoice-windows-${{ matrix.artifact_architecture }}
+          path: dist/symvoice-windows-${{ matrix.artifact_architecture }}.zip
+          if-no-files-found: error
+          retention-days: 14
