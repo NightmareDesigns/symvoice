@@ -1,0 +1,4 @@
+LIBRARY "symvoice-sapi"
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

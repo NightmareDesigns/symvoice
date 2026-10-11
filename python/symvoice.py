@@ -15,6 +15,7 @@ SAMPLE_RATE = 16000
 MANIFEST_NAME = "manifest.json"
 WORD_PATTERN = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 MAX_TEXT_LENGTH = 65536
+MAX_REQUEST_BYTES = MAX_TEXT_LENGTH * 6 + 128
 
 
 def find_engine():
@@ -321,7 +322,7 @@ def make_speech_handler(dataset, engine):
             if content_length < 1:
                 self.send_json(400, {"error": "request body must not be empty"})
                 return
-            if content_length > MAX_TEXT_LENGTH * 4:
+            if content_length > MAX_REQUEST_BYTES:
                 self.send_json(413, {"error": "request body is too large"})
                 return
             try:

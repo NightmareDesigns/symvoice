@@ -400,7 +400,7 @@ class SpeechApiTests(unittest.TestCase):
         self.assertIn("only WAV", json.loads(raised.exception.read())["error"])
 
     def test_oversized_request_is_rejected_before_body_read(self):
-        body_limit = SYMVOICE.MAX_TEXT_LENGTH * 4 + 1024
+        body_limit = SYMVOICE.MAX_REQUEST_BYTES
         request = urllib.request.Request(
             self.url + "/v1/audio/speech",
             data=b"x" * (body_limit + 1),
@@ -419,6 +419,38 @@ class SpeechApiTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 400)
         self.assertIn(
             "must not exceed", json.loads(raised.exception.read())["error"])
+
+    def test_utf8_request_body_with_multibyte_text_fits_byte_limit(self):
+        request = urllib.request.Request(
+            self.url + "/v1/audio/speech",
+            data=json.dumps({"input": "é" * 1000}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request, timeout=5)
+
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn(
+            "record these words or phrases first",
+            json.loads(raised.exception.read())["error"],
+        )
+
+
+class WindowsIntegrationTests(unittest.TestCase):
+    def test_sapi_com_class_guid_matches_registration_scripts(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "native" / "src" / "sapi_engine.c").read_text(encoding="utf-8")
+        register = (root / "scripts" / "Register-Symvoice.ps1").read_text(encoding="utf-8")
+        unregister = (root / "scripts" / "Unregister-Symvoice.ps1").read_text(encoding="utf-8")
+        clsid = "73EA0E66-7B92-4D89-8BE0-A633F9274291"
+
+        self.assertIn("0x73ea0e66", source.lower())
+        self.assertIn("0x7b92", source.lower())
+        self.assertIn("0x4d89", source.lower())
+        self.assertIn("0x8b, 0xe0, 0xa6, 0x33, 0xf9, 0x27, 0x42, 0x91", source.lower())
+        self.assertIn(clsid, register)
+        self.assertIn(clsid, unregister)
 
 
 if __name__ == "__main__":

@@ -9,12 +9,25 @@ add_executable(symvoice-audio native/src/main.c)
 
 if(WIN32)
     target_link_libraries(symvoice-audio PRIVATE winmm)
+
+    add_library(symvoice-sapi SHARED
+        native/src/sapi_engine.c
+        native/src/symvoice-sapi.def
+    )
+    target_compile_definitions(symvoice-sapi PRIVATE CINTERFACE COBJMACROS)
+    target_link_libraries(symvoice-sapi PRIVATE sapi ole32 winhttp)
 endif()
 
 if(MSVC)
     target_compile_options(symvoice-audio PRIVATE /W4)
+    if(WIN32)
+        target_compile_options(symvoice-sapi PRIVATE /W4)
+    endif()
 else()
     target_compile_options(symvoice-audio PRIVATE -Wall -Wextra -Wpedantic)
+    if(WIN32)
+        target_compile_options(symvoice-sapi PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
 endif()
 
 include(CTest)

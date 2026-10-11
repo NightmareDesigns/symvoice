@@ -113,8 +113,37 @@ curl.exe http://127.0.0.1:8021/v1/audio/speech `
   --output response.wav
 ```
 
-This is a local app integration endpoint, not a registered Windows system
-voice. It only speaks text covered by the corpus recordings.
+This is the speech backend used by the optional Windows SAPI engine below. It
+only speaks text covered by the corpus recordings.
+
+### Register as a Windows SAPI voice
+
+The Windows build also creates `symvoice-sapi.dll`, a native SAPI 5 COM engine.
+Build with the matching architecture for the Windows apps that will use it
+(typically x64), and register it for your user without administrator rights:
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release
+powershell -ExecutionPolicy Bypass -File .\scripts\Register-Symvoice.ps1 `
+  -DllPath .\build\Release\symvoice-sapi.dll
+python .\python\symvoice.py serve my-voice --port 8021
+```
+
+Leave the speech server running before selecting **Symvoice** in a SAPI 5
+application or Windows' legacy Speech Properties. The engine sends spoken text
+to the local server and streams its WAV samples back to SAPI. If the server is
+stopped, SAPI synthesis fails rather than falling back to another service.
+Remove the per-user registration with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\Unregister-Symvoice.ps1
+```
+
+This integration targets SAPI 5 applications; apps using Windows' newer
+`Windows.Media.SpeechSynthesis` API or their own TTS engines do not automatically
+use SAPI voices. SAPI DLL activation has not been tested on Windows in this
+environment.
 
 The Python command locates the native executable in `build`. To use a different
 build location, pass `--engine path\to\symvoice-audio.exe`.
