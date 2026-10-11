@@ -26,11 +26,6 @@ typedef struct {
     LONG references;
 } symvoice_factory;
 
-static symvoice_engine *engine_from_interface(ISpTTSEngine *interface)
-{
-    return (symvoice_engine *)((char *)interface - offsetof(symvoice_engine, interface));
-}
-
 static HRESULT STDMETHODCALLTYPE engine_query_interface(
     ISpTTSEngine *interface, REFIID iid, void **object);
 static ULONG STDMETHODCALLTYPE engine_add_ref(ISpTTSEngine *interface);
@@ -333,16 +328,12 @@ static HRESULT request_speech(const WCHAR *text, DWORD text_length, BYTE **audio
                 }
                 capacity *= 2U;
             }
-            BYTE *grown = (BYTE *)HeapReAlloc(
-                GetProcessHeap(), HEAP_ZERO_MEMORY, response, capacity);
+            BYTE *grown = response == NULL
+                ? (BYTE *)HeapAlloc(GetProcessHeap(), 0, capacity)
+                : (BYTE *)HeapReAlloc(GetProcessHeap(), 0, response, capacity);
             if (grown == NULL) {
-                if (response == NULL) {
-                    grown = (BYTE *)HeapAlloc(GetProcessHeap(), 0, capacity);
-                }
-                if (grown == NULL) {
-                    status = E_OUTOFMEMORY;
-                    goto cleanup;
-                }
+                status = E_OUTOFMEMORY;
+                goto cleanup;
             }
             response = grown;
             response_capacity = capacity;
@@ -433,17 +424,14 @@ static HRESULT STDMETHODCALLTYPE engine_speak(
             while (capacity < text_length + fragment_length + 1U) {
                 capacity *= 2U;
             }
-            WCHAR *grown = (WCHAR *)HeapReAlloc(
-                GetProcessHeap(), 0, text, (size_t)capacity * sizeof(WCHAR));
+            WCHAR *grown = text == NULL
+                ? (WCHAR *)HeapAlloc(
+                    GetProcessHeap(), 0, (size_t)capacity * sizeof(WCHAR))
+                : (WCHAR *)HeapReAlloc(
+                    GetProcessHeap(), 0, text, (size_t)capacity * sizeof(WCHAR));
             if (grown == NULL) {
-                if (text == NULL) {
-                    grown = (WCHAR *)HeapAlloc(
-                        GetProcessHeap(), 0, (size_t)capacity * sizeof(WCHAR));
-                }
-                if (grown == NULL) {
-                    status = E_OUTOFMEMORY;
-                    goto cleanup;
-                }
+                status = E_OUTOFMEMORY;
+                goto cleanup;
             }
             text = grown;
             text_capacity = capacity;
@@ -528,7 +516,7 @@ static const IClassFactoryVtbl g_factory_vtable = {
     factory_lock_server
 };
 
-static symvoice_factory g_factory = {{&g_factory_vtable}, 1};
+static symvoice_factory g_factory = {{&g_factory_vtable}, 0};
 
 static HRESULT STDMETHODCALLTYPE factory_query_interface(
     IClassFactory *interface, REFIID iid, void **object)
@@ -546,6 +534,7 @@ static HRESULT STDMETHODCALLTYPE factory_query_interface(
 static ULONG STDMETHODCALLTYPE factory_add_ref(IClassFactory *interface)
 {
     symvoice_factory *factory = (symvoice_factory *)interface;
+    InterlockedIncrement(&g_dll_references);
     return (ULONG)InterlockedIncrement(&factory->references);
 }
 
@@ -553,10 +542,7 @@ static ULONG STDMETHODCALLTYPE factory_release(IClassFactory *interface)
 {
     symvoice_factory *factory = (symvoice_factory *)interface;
     LONG references = InterlockedDecrement(&factory->references);
-    if (references == 0) {
-        InterlockedIncrement(&factory->references);
-        references = 1;
-    }
+    InterlockedDecrement(&g_dll_references);
     return (ULONG)references;
 }
 

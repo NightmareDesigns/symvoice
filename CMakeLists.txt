@@ -10,9 +10,14 @@ add_executable(symvoice-audio native/src/main.c)
 if(WIN32)
     target_link_libraries(symvoice-audio PRIVATE winmm)
 
+    if(MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(SAPI_EXPORTS_FILE native/src/symvoice-sapi-x86.def)
+    else()
+        set(SAPI_EXPORTS_FILE native/src/symvoice-sapi.def)
+    endif()
     add_library(symvoice-sapi SHARED
         native/src/sapi_engine.c
-        native/src/symvoice-sapi.def
+        ${SAPI_EXPORTS_FILE}
     )
     target_compile_definitions(symvoice-sapi PRIVATE CINTERFACE COBJMACROS)
     target_link_libraries(symvoice-sapi PRIVATE sapi ole32 winhttp)
