@@ -11,9 +11,9 @@ channels into mono, 16 kHz PCM WAV, a common input format for speech models.
 It performs channel mixing and linear sample-rate conversion without third-party
 runtime libraries. On Windows it can also record up to one hour of mono, 16 kHz
 audio from the default microphone using the Windows multimedia API. Recording
-requires a microphone that supports this format. This is audio preparation only;
-voice training, speech generation, and Windows SAPI integration are not implemented
-yet.
+requires a microphone that supports this format. Symvoice can produce simple
+speech by joining recorded clips; neural voice training and Windows SAPI
+integration are not implemented yet.
 
 ### Build on Windows
 
@@ -90,6 +90,31 @@ to 64 words per output and requires recordings that cover all requested words
 or phrases. It is not natural continuous TTS or a trained voice model.
 Punctuation and prosody are not synthesized; text is matched without regard
 to case.
+
+### Connect an AI app over localhost
+
+Start the local WAV speech endpoint after building the native utility:
+
+```powershell
+python python/symvoice.py serve my-voice --port 8021
+```
+
+The server binds only to `127.0.0.1`. A local client can POST JSON to
+`http://127.0.0.1:8021/v1/audio/speech` with an `input` string and receive
+`audio/wav`; `model` and `voice` string fields are accepted for common client
+compatibility, but voice selection is controlled by the corpus passed to
+`serve`. `response_format` may be omitted or set to `wav`. Requests are limited
+to 64 KiB of text. For example:
+
+```powershell
+curl.exe http://127.0.0.1:8021/v1/audio/speech `
+  -H "Content-Type: application/json" `
+  -d '{"input":"Hello, world!","response_format":"wav"}' `
+  --output response.wav
+```
+
+This is a local app integration endpoint, not a registered Windows system
+voice. It only speaks text covered by the corpus recordings.
 
 The Python command locates the native executable in `build`. To use a different
 build location, pass `--engine path\to\symvoice-audio.exe`.

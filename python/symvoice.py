@@ -1,4 +1,5 @@
 import argparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import re
@@ -62,7 +63,11 @@ def checked_sample_path(dataset, entry):
     relative = Path(entry["audio"])
     if relative.is_absolute() or len(relative.parts) != 2 or relative.parts[0] != "audio":
         raise ValueError("corpus manifest contains an unsafe audio path")
-    return dataset / relative
+    audio_root = (dataset / "audio").resolve()
+    path = (dataset / relative).resolve()
+    if not path.is_relative_to(audio_root):
+        raise ValueError("corpus manifest audio path resolves outside the corpus")
+    return path
 
 
 def text_words(text):
@@ -214,7 +219,7 @@ def validate_dataset(dataset):
     print(f"Corpus is valid: {len(identifiers)} sample(s)")
 
 
-def synthesize_text(dataset, output_path, text, engine):
+def select_speech_samples(dataset, text):
     words = text_words(text)
     if not words:
         raise ValueError("text must contain at least one word")
@@ -265,6 +270,11 @@ def synthesize_text(dataset, output_path, text, engine):
 
     if not selected_paths:
         raise ValueError("no matching recorded audio was found")
+    return selected_paths
+
+
+def synthesize_text(dataset, output_path, text, engine):
+    selected_paths = select_speech_samples(dataset, text)
     destination = output_path.resolve()
     if any(path.resolve() == destination for path in selected_paths):
         raise ValueError("synthesis output must not overwrite a recorded sample")
@@ -275,6 +285,107 @@ def synthesize_text(dataset, output_path, text, engine):
     except subprocess.CalledProcessError as error:
         raise ValueError(f"native synthesis failed with exit code {error.returncode}") from error
     print(f"Created speech WAV: {output_path}")
+
+
+def make_speech_handler(dataset, engine):
+    class SpeechHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def send_json(self, status, value):
+            body = json.dumps(value).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_json(200, {"status": "ok"})
+            else:
+                self.send_json(404, {"error": "not found"})
+
+        def do_POST(self):
+            if self.path != "/v1/audio/speech":
+                self.send_json(404, {"error": "not found"})
+                return
+            if self.headers.get_content_type() != "application/json":
+                self.send_json(415, {"error": "Content-Type must be application/json"})
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                self.send_json(411, {"error": "a valid Content-Length is required"})
+                return
+            if content_length < 1:
+                self.send_json(400, {"error": "request body must not be empty"})
+                return
+            if content_length > MAX_TEXT_LENGTH * 4:
+                self.send_json(413, {"error": "request body is too large"})
+                return
+            try:
+                request = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                if not isinstance(request, dict) or not isinstance(request.get("input"), str):
+                    raise ValueError("JSON object must contain a string 'input' field")
+                if any(
+                    key in request and not isinstance(request[key], str)
+                    for key in ("model", "voice")
+                ):
+                    raise ValueError("'model' and 'voice' must be strings when provided")
+                if set(request) - {"input", "model", "voice", "response_format"}:
+                    raise ValueError("request contains unsupported fields")
+                text = request["input"]
+                if len(text) > MAX_TEXT_LENGTH:
+                    raise ValueError(f"input must not exceed {MAX_TEXT_LENGTH} characters")
+                if request.get("response_format", "wav") != "wav":
+                    raise ValueError("only WAV response_format is supported")
+                samples = select_speech_samples(dataset, text)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as output:
+                    output_path = Path(output.name)
+                try:
+                    subprocess.run(
+                        [str(engine), "synthesize", str(output_path),
+                         *(str(sample) for sample in samples)],
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                    )
+                    body = output_path.read_bytes()
+                finally:
+                    output_path.unlink(missing_ok=True)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+                self.send_json(400, {"error": str(error)})
+                return
+            except subprocess.CalledProcessError:
+                self.send_json(500, {"error": "speech synthesis failed"})
+                return
+            except OSError:
+                self.send_json(500, {"error": "could not read synthesized speech"})
+                return
+
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/wav")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    return SpeechHandler
+
+
+def serve_speech(dataset, engine, host, port):
+    if host not in ("127.0.0.1", "::1"):
+        raise ValueError("speech server must bind to loopback (127.0.0.1 or ::1)")
+    dataset = dataset.resolve()
+    validate_dataset(dataset)
+    server = ThreadingHTTPServer((host, port), make_speech_handler(dataset, engine))
+    server.daemon_threads = True
+    print(f"Symvoice speech API listening at http://{host}:{server.server_port}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 def main():
@@ -324,6 +435,11 @@ def main():
     speak.add_argument("output", type=Path)
     speak.add_argument("--text", required=True, help="text using only words in this corpus")
     speak.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
+    serve = commands.add_parser("serve", help="serve a loopback OpenAI-style WAV speech endpoint")
+    serve.add_argument("directory", type=Path)
+    serve.add_argument("--host", default="127.0.0.1", choices=("127.0.0.1", "::1"))
+    serve.add_argument("--port", type=int, default=8021)
+    serve.add_argument("--engine", type=Path, help="path to the native symvoice-audio executable")
     args = parser.parse_args()
 
     try:
@@ -347,6 +463,14 @@ def main():
             if engine is None or not engine.is_file():
                 parser.error("native engine not found; build it with CMake or pass --engine")
             synthesize_text(args.directory, args.output, read_synthesis_text(args.text), engine)
+            return 0
+        if args.command == "serve":
+            if not 0 <= args.port <= 65535:
+                raise ValueError("port must be between 0 and 65535")
+            engine = args.engine or find_engine()
+            if engine is None or not engine.is_file():
+                parser.error("native engine not found; build it with CMake or pass --engine")
+            serve_speech(args.directory, engine, args.host, args.port)
             return 0
 
         engine = args.engine or find_engine()

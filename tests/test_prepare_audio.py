@@ -1,15 +1,23 @@
+import io
 import json
+import importlib.util
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 import wave
 from pathlib import Path
 
 
 ENGINE = Path(sys.argv.pop(1)).resolve()
 CLI = Path(__file__).resolve().parents[1] / "python" / "symvoice.py"
+SPEC = importlib.util.spec_from_file_location("symvoice_cli", CLI)
+SYMVOICE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SYMVOICE)
 
 
 def write_wav(path, channels, sample_rate, samples, sample_width=2):
@@ -321,6 +329,96 @@ class VoiceDatasetTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b"already recorded", result.stderr)
+
+
+class SpeechApiTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.directory = Path(self.temp_dir.name)
+        self.dataset = self.directory / "voice"
+        self.input_path = self.directory / "hello.wav"
+        self.output_path = self.directory / "hello-normalized.wav"
+        subprocess.run([sys.executable, CLI, "dataset", "init", self.dataset], check=True)
+        write_wav(self.input_path, 1, 16000, [1000, 2000, -1000])
+        subprocess.run(
+            [sys.executable, CLI, "dataset", "word-add", self.dataset, self.input_path,
+             "--text", "hello", "--engine", ENGINE],
+            check=True, capture_output=True,
+        )
+        self.server = SYMVOICE.ThreadingHTTPServer(
+            ("127.0.0.1", 0), SYMVOICE.make_speech_handler(self.dataset, ENGINE))
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp_dir.cleanup()
+
+    def post_json(self, value):
+        request = urllib.request.Request(
+            self.url + "/v1/audio/speech",
+            data=json.dumps(value).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        return urllib.request.urlopen(request, timeout=5)
+
+    def test_health_endpoint(self):
+        with urllib.request.urlopen(self.url + "/health", timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read()), {"status": "ok"})
+
+    def test_speech_endpoint_returns_recorded_voice_as_wav(self):
+        with self.post_json({"input": "Hello!"}) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get_content_type(), "audio/wav")
+            payload = response.read()
+        with wave.open(io.BytesIO(payload), "rb") as audio:
+            self.assertEqual(
+                (audio.getnchannels(), audio.getsampwidth(), audio.getframerate()),
+                (1, 2, 16000),
+            )
+            self.assertGreater(audio.getnframes(), 0)
+
+    def test_missing_vocabulary_returns_json_client_error(self):
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json({"input": "missing"})
+
+        self.assertEqual(raised.exception.code, 400)
+        body = json.loads(raised.exception.read())
+        self.assertIn("record these words or phrases first", body["error"])
+
+    def test_non_wav_format_is_rejected(self):
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json({"input": "hello", "response_format": "mp3"})
+
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("only WAV", json.loads(raised.exception.read())["error"])
+
+    def test_oversized_request_is_rejected_before_body_read(self):
+        body_limit = SYMVOICE.MAX_TEXT_LENGTH * 4 + 1024
+        request = urllib.request.Request(
+            self.url + "/v1/audio/speech",
+            data=b"x" * (body_limit + 1),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request, timeout=5)
+
+        self.assertEqual(raised.exception.code, 413)
+
+    def test_text_character_limit_is_enforced(self):
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            self.post_json({"input": "h" * (SYMVOICE.MAX_TEXT_LENGTH + 1)})
+
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn(
+            "must not exceed", json.loads(raised.exception.read())["error"])
 
 
 if __name__ == "__main__":
