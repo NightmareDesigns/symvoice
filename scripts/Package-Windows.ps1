@@ -38,9 +38,10 @@ if (Test-Path -LiteralPath $zipPath) {
 New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $repository "CMakeLists.txt") -Destination $stagingDirectory
 Copy-Item -LiteralPath (Join-Path $repository "README.md") -Destination $stagingDirectory
-Copy-Item -LiteralPath (Join-Path $repository "python") -Destination $stagingDirectory -Recurse
-Copy-Item -LiteralPath (Join-Path $repository "native") -Destination $stagingDirectory -Recurse
-Copy-Item -LiteralPath (Join-Path $repository "scripts") -Destination $stagingDirectory -Recurse
+foreach ($directory in @("python", "native", "scripts", "tests")) {
+    Copy-Item -LiteralPath (Join-Path $repository $directory) `
+        -Destination (Join-Path $stagingDirectory $directory) -Recurse
+}
 
 $packagedBuild = Join-Path $stagingDirectory "build\Release"
 New-Item -ItemType Directory -Path $packagedBuild -Force | Out-Null
